@@ -39,11 +39,6 @@ OBJS_KCSAN = \
   $K/uart.o \
   $K/spinlock.o
 
-ifdef KCSAN
-OBJS_KCSAN += \
-	$K/kcsan.o
-endif
-
 ifeq ($(LAB),$(filter $(LAB), lock))
 OBJS += \
 	$K/stats.o\
@@ -104,10 +99,25 @@ ifeq ($(LAB),net)
 CFLAGS += -DNET_TESTS_PORT=$(SERVERPORT)
 endif
 
+# Kernel Concurrency Sanitizer
 ifdef KCSAN
+OBJS_KCSAN += \
+	$K/kcsan.o
 CFLAGS += -DKCSAN
 KCSANFLAG = -fsanitize=thread
 endif
+
+# Kernel Undefined Behaviour Sanitizer
+ifdef KUBSAN
+CFL#AGS+= -DKUBSAN
+KUBSANFLAG = -fsanitize=undefined
+endif
+
+# Kernel Address Sanitizer
+#ifdef KASAN
+#CFLAGS+= -DKASAN
+#KASANFLAG = -fsanitize=kernel-address
+#endif
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
 ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]no-pie'),)
@@ -247,8 +257,6 @@ UPROGS += \
 	$U/_bigfile
 endif
 
-
-
 ifeq ($(LAB),net)
 UPROGS += \
 	$U/_nettests
@@ -259,13 +267,12 @@ ifeq ($(LAB),util)
 	UEXTRA += user/xargstest.sh
 endif
 
-
 fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
 	mkfs/mkfs fs.img README $(UEXTRA) $(UPROGS)
 
 -include kernel/*.d user/*.d
 
-clean: 
+clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	$U/initcode $U/initcode.out $K/kernel fs.img \

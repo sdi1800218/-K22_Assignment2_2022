@@ -29,10 +29,60 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
-//
+// CoW handler function
+// return 0 on success, -1 on failure
+int
+cowhandler(uint64 vaddr, pagetable_t pg) {
+  uint64 paddr;
+  char *new;
+  uint flags;
+
+  if (vaddr >= MAXVA)
+    return -1;
+
+  pte_t *pte = walk(pg, vaddr, 0);
+  if (pte == 0) {
+    return -1;
+  }
+
+  flags = PTE_FLAGS(*pte);
+
+  // Check Valid and User bits
+  if ((flags & PTE_V) == 0 || (flags & PTE_U) == 0) {
+    return -1;
+  }
+
+  // Validate CoW page;
+  if(flags & PTE_RSW_COW) {
+
+    // Add Write bit; Remove CoW bit
+    flags = flags | PTE_V | PTE_R | PTE_W | PTE_X | PTE_U;
+    flags &= ~PTE_RSW_COW;
+
+    // TODO: Use the optimization described in Manual p. 49, par 4
+    // Alloc a new physical page
+    if ((new = kalloc()) == 0) {
+      //printf("cowhandler: CoW kalloc fault\n");
+      return -1;
+    }
+
+    // Copy old physical page to new physical page
+    paddr = PTE2PA(*pte);
+    memmove(new, (char *) paddr, PGSIZE);
+
+    // Write new PTE
+    *pte = PA2PTE(new) | flags;
+    kfree((void *) paddr);
+  }
+  else {
+    // Dunno what to do; say error!
+    return -1;
+  }
+  return 0;
+}
+
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
-//
 void
 usertrap(void)
 {
@@ -46,10 +96,10 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
 
@@ -65,6 +115,14 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) {
+
+    // page fault handler
+    uint64 vaddr = r_stval();
+    if (cowhandler(vaddr, p->pagetable) < 0) {
+      p->killed = 1;
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -108,7 +166,7 @@ usertrapret(void)
 
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
-  
+
   // set S Previous Privilege mode to User.
   unsigned long x = r_sstatus();
   x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
@@ -130,14 +188,14 @@ usertrapret(void)
 
 // interrupts and exceptions from kernel code go here via kernelvec,
 // on whatever the current kernel stack is.
-void 
+void
 kerneltrap()
 {
   int which_dev = 0;
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
-  
+
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
   if(intr_get() != 0)
@@ -207,7 +265,7 @@ devintr()
     if(cpuid() == 0){
       clockintr();
     }
-    
+
     // acknowledge the software interrupt by clearing
     // the SSIP bit in sip.
     w_sip(r_sip() & ~2);
@@ -217,4 +275,3 @@ devintr()
     return 0;
   }
 }
-

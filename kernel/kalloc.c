@@ -9,10 +9,14 @@
 #include "riscv.h"
 #include "defs.h"
 
+#define PGINDEX(pa)    (pa / PGSIZE)
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+
+uint64 refcounter[PHYSTOP / PGSIZE];
 
 struct run {
   struct run *next;
@@ -22,6 +26,34 @@ struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem;
+
+/*
+void
+acqreflock()
+{
+  acquire(&kmem.lock);
+}
+
+void
+relreflock()
+{
+  release(&kmem.lock);
+}
+*/
+
+void
+increfvalue(void *pa)
+{
+  acquire(&kmem.lock);
+
+  int pgi = PGINDEX((uint64)pa);
+  if (refcounter[pgi] < 1)
+    panic("increfvalue: oops this shouldn't happen\n");
+
+  ++refcounter[pgi];
+
+  release(&kmem.lock);
+}
 
 void
 kinit()
@@ -35,8 +67,10 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+    refcounter[PGINDEX((uint64)p)] = 1;
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by v,
@@ -48,7 +82,21 @@ kfree(void *pa)
 {
   struct run *r;
 
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+  // If page refers to >1 processes, decrease ref count and return
+  // else, proceed with the rest of kfree()
+  acquire(&kmem.lock);
+  int pgi = PGINDEX((uint64)pa);
+  if (refcounter[pgi] < 1) {
+    panic("kfree: refcount < 1");
+  }
+  --refcounter[pgi];
+  release(&kmem.lock);
+
+  if (refcounter[pgi] >= 1) {
+    return;
+  }
+
+  if (((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
@@ -72,11 +120,20 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+
+  if(r) {
+    // Ensure page index value and assign to 1
+    int pgi = PGINDEX((uint64) r);
+    if (refcounter[pgi] != 0)
+      panic("kalloc: refcounter");
+
+    refcounter[pgi] = 1;
     kmem.freelist = r->next;
+  }
   release(&kmem.lock);
 
-  if(r)
+  if(r) {
     memset((char*)r, 5, PGSIZE); // fill with junk
+  }
   return (void*)r;
 }
